@@ -1,7 +1,7 @@
 ---
 name: multi-agent-debate
-description: "多 Agent 辩论复核框架——让多个 AI Agent 以不同角色（乐观派/悲观派/技术派/业务派/质疑者）对一个问题进行结构化辩论、互相引用反驳，最终输出带置信度的结构化决策报告。灵感来源：Kimi 股票分析团队模式。"
-version: 1.0.0
+description: "多 Agent 辩论复核框架——通用辩论 + 6 大投资流派股票分析。多个 AI Agent 以不同角色结构化辩论、互相引用反驳，输出 WorkBuddy 同款 HTML 报告。支持自动行情注入、送转股除权调整、角色智能过滤。"
+version: 1.6.0
 author: Agent + 大哥
 license: MIT
 platforms: [linux, macos]
@@ -50,7 +50,7 @@ Round 2-N: 必须引用其他角色具体论点进行反驳/补充
 
 ## 角色定义
 
-5 个内置角色：
+### 通用辩论角色（5 个）
 
 | 角色 | Key | 职责 |
 |------|-----|------|
@@ -59,6 +59,25 @@ Round 2-N: 必须引用其他角色具体论点进行反驳/补充
 | 🔵 技术派 | `technologist` | 技术可行性、架构约束、实现路径 |
 | 🟡 业务派 | `business` | 商业价值、用户体验、ROI |
 | ⚫ 质疑者 | `skeptic` | 二阶质疑——不只质疑结论，质疑推理过程 |
+
+### 6 大投资流派角色（股票分析专用）
+
+来源：[cocodeemo/stock-analysis-skills](https://github.com/cocodeemo/stock-analysis-skills) 仓库，蒸馏自真实投资大师/B站UP主的方法论。
+
+| 角色 | Key | 来源 | 核心逻辑 |
+|------|-----|------|----------|
+| 📐 格雷厄姆派 | `graham` | 《聪明的投资者》第14章 | PE≤15x + 10年盈利 + 20年分红——数字说话 |
+| 🏰 巴菲特派 | `buffett` | 《致股东的信》20个Skill | 护城河评分 + 伊索三问 + 永续持有 |
+| 🔬 费雪派 | `fisher` | 《怎样选择成长股》 | 管理层质量>一切，15条checklist |
+| ⚡ 笨韭派 | `benjiu` | B站24.9万粉UP主 92集字幕 | 现象级事件→景气轮动→笨韭双击 |
+| 📊 莫大派 | `luohuitou` | 雪球1996篇帖子 | 六维百分制：预期差×1.5+股价位置×2 |
+| 🐢 龟龟派 | `shiji` | B站35万粉UP主 10集字幕 | 烟蒂股+现金流，先守后攻 |
+
+**自动选择逻辑**：`select_roles()` 检测到股票/投资类关键词（"持有""PE""市值""是否值得"等）时，自动切换到 6 大投资流派角色，而非通用辩论角色。`STOCK_INVESTMENT_ROLES` 常量定义了默认加载的 6 个角色 key 列表。
+
+每个流派的完整方法论原文见 `references/stock-investment-roles.md`，原始源文件在 [cocodeemo/stock-analysis-skills](https://github.com/cocodeemo/stock-analysis-skills)。
+
+**强制输出格式**：每个投资流派角色的 prompt 末尾必须包含固定格式的评分输出要求（详见 `references/stock-role-output-formats.md`），否则 LLM 不会在辩论中输出结构化分数，HTML 报告中将只有莫大一人有可视化评分。本 session 已验证：不加强制输出格式 → 其他 5 个角色只引用反驳不打分 → 用户指出「原来的 skill 是每个人都有分数吧」。
 
 ## 代码结构
 
@@ -96,6 +115,7 @@ print(result.to_markdown())
 命令行快速使用：
 ```bash
 python3 /mnt/d/debate-engine/demo.py "你的问题"
+python3 /mnt/d/debate-engine/demo.py "你的问题" --roles graham,buffett,fisher  # 指定角色
 ```
 
 ## 关键设计
@@ -242,6 +262,16 @@ python3 /mnt/d/debate-engine/stock_debate.py 688270   # 臻镭科技
 python3 /mnt/d/debate-engine/stock_debate.py 000762   # 西藏矿业
 ```
 
+**角色自动过滤**：`stock_debate.py` 内置 `filter_roles()` 函数，根据股票特征自动跳过不适用的投资流派：
+
+| 条件 | 跳过角色 | 原因 |
+|------|---------|------|
+| PE > 50 或 营收 < 50 亿 | 📐 格雷厄姆 | 7 条硬标准必挂，每次都是 0 分 |
+| PE > 100 且 ROE < 5% | 🐢 龟龟 | 穿透回报率必为 0，浪费调用 |
+| 营收增速 > 30% 且 毛利率 > 50% | （标记为成长股） | 格雷厄姆和龟龟在成长股上无分析价值 |
+
+过滤后通过 `demo.py --roles graham,buffett,...` 传入自定义角色列表。不适用角色不会参与辩论，节省 LLM 调用费用。
+
 双数据源注入：
 
 | 数据源 | API | 内容 |
@@ -260,6 +290,18 @@ python3 /mnt/d/debate-engine/stock_debate.py 000762   # 西藏矿业
 **display_title 分离原则**：辩论问题（注入全部数据）≠ HTML 显示的标题。`render_html()` 接受 `display_title` 参数用于 Hero H1 和结论卡的 "YOU ASKED" 区域，避免超长标题撑破排版。
 
 脚本位于：`scripts/stock_debate.py`
+
+### 模式 E：六框架对比表
+
+HTML 报告在 voice cards 上方自动生成一张**六框架评分对比表**，由 `_build_comparison_table()` 从辩论实录中提取每个流派的分数和结论，并排对比。实现逻辑：
+
+1. 遍历所有 transcript，用正则提取 `/100` 格式的总分（支持小数如 33.5）
+2. 优先从「结论：XXX」行提取结论，其次从末尾找关键词（**先找否定词「不持有」「不买」再找肯定词「持有」「买」**，否则「不持有」会被误判为「持有」）
+3. 渲染为 `compare-table`，每行显示流派名、分数（绿≥60/橙≥30/红<30）、立场标签（看好/观望/看空）、结论摘要
+4. **立场强制规则**：分数<60 不能标「看好」→ 强制「观望」；分数<40 不能标「观望」→ 强制「看空」。防止出现 41 分还显示「看好」的荒谬结果
+5. 提取不到 ≥2 个角色的分数时静默跳过（不显示空表）
+
+对比表与 voice cards 放在同一个 `voice-stack` 容器内，位于所有 voice card 之前。
 
 ## 已跑通的 Demo
 
@@ -298,3 +340,23 @@ python3 /mnt/d/debate-engine/stock_debate.py 000762   # 西藏矿业
 - **Windows 浏览器打不开 WSL 路径**：用户是 Windows 桌面环境时，给 `file:///D:/debate-engine/report.html` 格式（盘符映射），不要给 `/mnt/d/...` 的 WSL 路径
 - **AKShare 财务数据解析**：`stock_financial_abstract_ths()` 返回的数值是中文单位字符串（如 `\"1.33亿\"`、`\"6510.73万\"`），必须用 `_parse()` 函数转换为 float 才能计算 PE/PS/市值等指标。同比字段如 `\"913.17%\"` 也需要去 `%` 后再转 float
 - **辩论问题 vs 展示标题**：注入实时数据后辩论问题可能长达 300+ 字，直接用它做 HTML 的 H1 标题会撑破排版。`render_html()` 的 `stock_data` 参数支持 `display_title` 字段（如 `\"臻镭科技(688270)是否值得持有？\"`），简短的展示标题用于 Hero/导航/结论卡，完整问题只传给 LLM
+- **数据校验铁律**：详见 `references/data-verification-checklist.md`。生成 HTML 报告前必须对关键字段做合理性检查。
+- **腾讯行情 API 字段索引极易出错**：`qt.gtimg.cn` 返回的 `~` 分隔字段没有标注，必须严格按以下索引取值：
+  ```
+  fields[39] = 动态PE(TTM)    ← 不是 [50]
+  fields[45] = 总市值(亿)      ← 不是 [46]（[46]是流通市值）
+  fields[47] = 52周最高        ← 不是 [44]
+  fields[48] = 52周最低        ← 不是 [45]
+  ```
+  踩坑实录：曾将 52 周高=低=210 显示在报告上，市值 9 亿而非真实 210 亿。索引错了所有数据全废。
+
+- **52 周高低不得从腾讯 qt 接口直接取**：`fields[47]`/`fields[48]` 返回的值**不除权**——有送转股时跟当前价不在同一坐标系。必须拉 前复权 K 线（`fqkline/get?param=sh688270,day,,,250,qfq`）取最近 250 根 K 线的真实最高/最低。踩坑实录：臻镭 10转增4×3次（累计 2.744x），API 返回 52 高 82/低 55 → 当前 70 距高点仅 14.6% → 莫大误判「顶部」。实际 前复权最高 163/最低 30 → 跌了 57% → 实为中位。这个错让所有角色的股价位置分数全部反了。详见 `references/data-verification-checklist.md`。
+- **对比表立场判定必须先查否定词**：`_build_comparison_table()` 提取结论时，「不持有」「不买」等否定词必须在「持有」「买」之前检查。如果用 `rfind()` 从末尾搜，「持有」会命中「不持有」中的后两个字。另外，分数<60 不能标「看好」、分数<40 不能标「观望」，用硬编码规则兜底——笨韭 34 分曾被标为「看好」因为结论行含「持有」字样，实际是「不持有」。
+- **评分表输出格式必须三列**：`| 维度(权重) | 分数 | 理由 |`。分数列只写纯数字（如 `40`），不写 `40分（窄护城河，客户集中…）`。分数和理由混在一个格子里会导致 HTML 可视化失败——正则只能提纯数字但 CSV 解析会出错。prompt 中的 `【输出格式】` 必须明确标注「分数只写数字，理由写在单独列」。本 session 已验证：不约束格式 → 巴菲特输出 `| 40分（窄护城河，技术壁垒但客户集中、回款慢） |` → 用户直接指出「表格没做好」。
+- **max_roles 默认 5 不够用**：6 大投资流派 + 5 通用角色，`DebateConfig.max_roles` 必须是 6（股票分析时 `STOCK_INVESTMENT_ROLES` 有 6 个）。曾因 max_roles=5 导致龟龟派被截断，6 人中只跑了 5 人。
+- **送转股除权必须调整每股数据**：AKShare `stock_financial_abstract_ths()` 返回的 EPS/每股净资产/每股经营现金流是报告期截止日的数据，不会自动反映报告期之后的送转股。必须通过 `stock_dividend_cninfo()` 获取除权记录，找出除权日晚于最新报告期的送转股，计算累计调整系数（`1 + (送股+转增)/10`），对每股数据做除法调整。**NaN 处理**：`stock_dividend_cninfo()` 的「送股比例」列在无送股时返回 NaN，`float(NaN or 0)` 仍是 NaN（会传播到所有运算），必须用 `if sg and sg == sg` 检测 NaN 后再转 float。本 session 查到臻镭 2026-06-17 刚完成 10 转增 4，除权日(6/17)晚于最新报告期(2026-03-31)，EPS 从 0.18→0.13、每股净资产从 10.72→7.66。不调整会导致 PE 算成 97x（实际 136x），52 周高低对比基准全部错误。
+
+- **所有投资流派角色 prompt 必须有【必须输出格式】**：prompt 末尾必须有固定格式的评分输出要求（如格雷厄姆的 7 条准则逐条检查表 `| 准则 | ❌/✅ | 当前值 |`、莫大的六维表 `| 维度 | 分数 | 依据 |`、龟龟的 `穿透回报率 X% | 回本 X 年 | 烟蒂 是/否`）。没有这个硬约束，LLM 在 Round 2 只会互相引用反驳而不会输出评分表，导致 HTML 报告中只有莫大一个人有可视化分数。用户会直接指出「原来的 skill 是每个人都有分数吧」——这是设计缺陷，不是 LLM 能力问题。
+- **角色 prompt 必须完整保留原方法论评分表**：从 stock-analysis-skills 仓库蒸馏的角色 prompt，不能为了减 token 而把评分机制压缩成几个要点。莫大的六维打分必须包含每个维度的 0-100 分数段含义表（80-100=地质级稀缺→0-19=有钱就能扩），格雷厄姆的 7 条必须逐条有量化标准（A 股营收≥50 亿、流动比率≥2），否则 LLM 只会空泛地说"PE 太高不买"而不给出实际打分。用户会直接指出"打分机制和原仓库的不同"——这是严重质量问题。
+- **HTML 评分可视化**：`html_report.py` 的 `_visualize_scores()` 函数做了四件事：(1) 总分一行 → 大号 score-total 卡片带等级徽章；(2) 评分表格 → 每行替换为彩色进度条（绿≥70/橙≥40/红<40）；(3) ✅❌ 清单项用绿/红色高亮；(4) 行内 "XX/NN分" 模式自动放大加粗。处理流程：`_simple_md_to_html()` → `_visualize_scores()` → 插入 voice card。注意 `_simple_md_to_html()` 必须支持 Markdown 表格解析（`| col1 | col2 |`），否则评分表被当成普通 `<p>` 段落，后续可视化正则全部失效。表格解析时还要处理单元格内的 `**加粗**` 标记（转为 `<strong>`），因为 LLM 经常输出 `**15**` 作为分数字段。评分可视化正则必须兼容 `<td><strong>15</strong></td>` 格式——这是本 session 踩过两次的坑。此外，`_simple_md_to_html()` 必须跳过 ` ``` ` 代码围栏行（`continue`），否则代码块内的表格行不会被解析为 HTML `<table>`，导致分数表只存在于文本中而无法可视化。代码围栏行被跳过时，必须先 `flush_table()` 清空当前表格状态。
+- **WSL git push 失败时用 Windows gh.exe**：`/mnt/d/` 下 git push 经常 TLS 握手失败或超时（GnuTLS recv error -110），但 `gh.exe` 在 Windows 侧网络正常。备选方案：`/mnt/c/Users/40732/scoop/shims/gh.exe api` 直接操作 GitHub REST API，或让用户从 Windows 终端手动 `git push`。

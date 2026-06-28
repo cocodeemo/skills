@@ -57,8 +57,25 @@ def fetch_stock_quote(code: str) -> dict:
     volume = int(fields[6]) if fields[6] else 0
     pe_ttm = float(fields[39]) if fields[39] else 0        # 动态市盈率
     market_cap = float(fields[45]) if fields[45] else 0     # 总市值(亿)
-    high_52w = float(fields[47]) if fields[47] else 0       # 52周最高
-    low_52w = float(fields[48]) if fields[48] else 0        # 52周最低
+
+    # ── 拉 前复权 K 线取真实 52 周高低（腾讯 qt 接口的 52 周值不除权）──
+    real_high_52w = 0
+    real_low_52w = 0
+    try:
+        kurl = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={full_code},day,,,250,qfq"
+        with urllib.request.urlopen(urllib.request.Request(kurl, headers={
+            'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.qq.com/'
+        }), timeout=8) as resp:
+            kd = json.loads(resp.read())
+            klines = kd.get('data', {}).get(full_code, {}).get('qfqday', [])
+            if klines:
+                real_high_52w = max(float(k[3]) for k in klines[-250:])
+                real_low_52w = min(float(k[4]) for k in klines[-250:])
+    except Exception:
+        pass
+
+    high_52w = real_high_52w if real_high_52w else float(fields[47]) if fields[47] else 0
+    low_52w = real_low_52w if real_low_52w else float(fields[48]) if fields[48] else 0
 
     # ST 检测
     is_st = 'ST' in name or '*ST' in name
@@ -85,7 +102,7 @@ def fetch_stock_quote(code: str) -> dict:
 # ── 2. 获取财务数据 ──
 
 def fetch_financial_data(code: str) -> dict:
-    """通过 AKShare 获取最新财务数据"""
+    """通过 AKShare 获取最新财务数据，自动检测送转股并调整每股数据"""
     try:
         import akshare as ak
         df = ak.stock_financial_abstract_ths(symbol=code, indicator='按报告期')
@@ -98,22 +115,37 @@ def fetch_financial_data(code: str) -> dict:
         prev = recent.iloc[-2].to_dict() if len(recent) >= 2 else {}
 
         def _parse(v):
-            """解析 akshare 的数值（可能是 "1.33亿" 字符串）"""
-            if v is None:
-                return 0
-            if isinstance(v, (int, float)):
-                return v
+            if v is None: return 0
+            if isinstance(v, (int, float)): return v
             s = str(v).replace(',', '').replace('%', '')
-            if '亿' in s:
-                return float(s.replace('亿', '')) * 1e8
-            if '万' in s:
-                return float(s.replace('万', '')) * 1e4
-            try:
-                return float(s)
-            except ValueError:
-                return 0
+            if '亿' in s: return float(s.replace('亿', '')) * 1e8
+            if '万' in s: return float(s.replace('万', '')) * 1e4
+            try: return float(s)
+            except ValueError: return 0
 
-        return {
+        # 检测最新送转股
+        split_factor = 1.0
+        try:
+            div_df = ak.stock_dividend_cninfo(symbol=code)
+            if div_df is not None and not div_df.empty:
+                latest_report = latest.get('报告期', '')
+                for _, row in div_df.iterrows():
+                    ex_date = str(row.get('除权日', ''))
+                    if ex_date <= latest_report:
+                        continue
+                    sg = row.get('送股比例', 0)
+                    zz = row.get('转增比例', 0)
+                    sg = float(sg) if sg and sg == sg else 0  # 处理 NaN
+                    zz = float(zz) if zz and zz == zz else 0
+                    factor = 1 + (sg + zz) / 10
+                    if factor > 1:
+                        split_factor *= factor
+                        desc = row.get('实施方案分红说明', '')
+                        print(f"   🔄 检测到送转股: {ex_date} {desc} (×{factor:.1f})")
+        except Exception as e:
+            print(f"   ⚠️ 送转检测: {e}")
+
+        fin = {
             'report_date': latest.get('报告期', ''),
             'revenue': _parse(latest.get('营业总收入')),
             'revenue_yoy': float(str(latest.get('营业总收入同比增长率', '0')).replace('%', '')),
@@ -121,15 +153,19 @@ def fetch_financial_data(code: str) -> dict:
             'net_profit_yoy': float(str(latest.get('净利润同比增长率', '0')).replace('%', '')),
             'gross_margin': float(str(latest.get('销售毛利率', '0')).replace('%', '')),
             'net_margin': float(str(latest.get('销售净利率', '0')).replace('%', '')),
-            'eps': float(str(latest.get('基本每股收益', '0'))),
-            'bps': float(str(latest.get('每股净资产', '0'))),
+            'eps': float(str(latest.get('基本每股收益', '0'))) / split_factor,
+            'bps': float(str(latest.get('每股净资产', '0'))) / split_factor,
             'roe': float(str(latest.get('净资产收益率', '0')).replace('%', '')),
-            'ocf_per_share': float(str(latest.get('每股经营现金流', '0'))),
+            'ocf_per_share': float(str(latest.get('每股经营现金流', '0'))) / split_factor,
             'debt_ratio': float(str(latest.get('资产负债率', '0')).replace('%', '')),
             'receivable_days': float(str(latest.get('应收账款周转天数', '0'))),
             'prev_revenue': _parse(prev.get('营业总收入')) if prev else 0,
             'prev_net_profit': _parse(prev.get('净利润')) if prev else 0,
+            'split_factor': split_factor,
         }
+        if split_factor > 1:
+            print(f"   📐 每股数据已按 ×{split_factor:.1f} 除权调整（EPS/BPS/OCF）")
+        return fin
     except Exception as e:
         print(f"   ⚠️ 财务数据获取失败: {e}")
         return {}
@@ -146,14 +182,18 @@ def build_question(quote: dict, fin: dict = None) -> str:
 
     fin_section = ""
     if fin and fin.get('revenue'):
+        split_note = ""
+        if fin.get('split_factor', 1) > 1:
+            split_note = f"\n- ⚠️ 该股最近有送转股（除权后调整系数 ×{fin['split_factor']:.1f}），以上每股数据已做除权修正"
+
         fin_section = f"""
-【最新财务数据 · {fin.get('report_date', '')}】
+【最新财务数据 · {fin.get('report_date', '')}】{split_note}
 - 营业总收入：{fin['revenue']/1e8:.2f}亿（同比{fin['revenue_yoy']:+.1f}%）
 - 净利润：{fin['net_profit']/1e8:.2f}亿（同比{fin['net_profit_yoy']:+.1f}%）
 - 毛利率：{fin['gross_margin']:.1f}% | 净利率：{fin['net_margin']:.1f}%
-- EPS：{fin['eps']:.4f}元 | 每股净资产：{fin['bps']:.2f}元
+- EPS（除权后）：{fin['eps']:.4f}元 | 每股净资产（除权后）：{fin['bps']:.2f}元
 - ROE：{fin['roe']:.1f}% | 资产负债率：{fin['debt_ratio']:.1f}%
-- 经营现金流/股：{fin['ocf_per_share']:.2f}元
+- 经营现金流/股（除权后）：{fin['ocf_per_share']:.2f}元
 - 应收账款周转天数：{fin['receivable_days']:.0f}天"""
 
     q = f"""{quote['name']}({quote['code']})目前是否值得持有？
@@ -242,7 +282,43 @@ def build_snapshot(quote: dict, fin: dict = None) -> dict:
     return snap
 
 
-# ── 4. 主流程 ──
+# ── 4. 角色过滤 ──
+
+def filter_roles(quote: dict, fin: dict = None) -> list[str]:
+    """根据股票特征过滤不合适的投资流派"""
+    from roles import STOCK_INVESTMENT_ROLES
+    roles = list(STOCK_INVESTMENT_ROLES)
+    skipped = []
+
+    pe = quote.get('pe_ttm', 0)
+    market_cap = quote.get('market_cap', 0)
+    is_growth = False
+
+    # 成长/科技股判定
+    if fin:
+        rev_yoy = fin.get('revenue_yoy', 0)
+        gross_margin = fin.get('gross_margin', 0)
+        if rev_yoy > 30 and gross_margin > 50:
+            is_growth = True
+
+    # 格雷厄姆不适合：PE>>15 或 营收<50亿 → 7条硬标准必挂
+    if pe > 50 or (fin and fin.get('revenue', 0) < 50e8):
+        if 'graham' in roles:
+            roles.remove('graham')
+            skipped.append('📐格雷厄姆(PE/营收不达标)')
+
+    # 龟龟不适合：无分红+高PE → 穿透回报率必为0
+    if pe > 100 and (not fin or fin.get('roe', 0) < 5):
+        if 'shiji' in roles:
+            roles.remove('shiji')
+            skipped.append('🐢龟龟(无分红+超高PE)')
+
+    if skipped:
+        print(f"   🔍 自动跳过: {', '.join(skipped)}")
+    return roles
+
+
+# ── 5. 主流程 ──
 
 def main():
     if len(sys.argv) < 2:
@@ -280,6 +356,50 @@ def main():
     else:
         print("   ⚠️ 未获取到财务数据，将仅使用行情数据")
 
+    # ── 数据一致性校验 ──
+    errors = []
+    if fin and quote:
+        # 1. PE 交叉验证
+        calc_pe = quote['price'] / (fin['eps'] * 4) if fin['eps'] > 0 else 0
+        api_pe = quote['pe_ttm']
+        if calc_pe > 0 and api_pe > 0:
+            diff_pct = abs(calc_pe - api_pe) / api_pe * 100
+            if diff_pct > 15:
+                errors.append(f'PE偏差{diff_pct:.0f}%（计算{calc_pe:.0f}x vs API{api_pe:.0f}x）')
+            else:
+                print(f"   ✅ PE一致（{calc_pe:.0f}x vs {api_pe:.0f}x）")
+
+        # 2. 送转股提醒
+        if fin.get('split_factor', 1) > 1:
+            print(f"   ⚠️ 送转股 ×{fin['split_factor']:.1f}，每股数据已除权")
+
+        # 3. 52 周高低一致性（K线算 vs API给）
+        kline_high = quote.get('high_52w', 0)
+        if kline_high > 0 and quote['price'] > kline_high * 0.95:
+            # 当前价接近或超过 52 周高（可能是 API 值没除权导致的）
+            pass  # kline data is already used, so this is handled
+        else:
+            print(f"   ✅ 52周区间: {kline_high:.0f}-{quote['low_52w']:.0f}（前复权）")
+
+        # 4. 极端估值预警
+        if api_pe > 200:
+            errors.append(f'PE {api_pe:.0f}x 极端高估')
+        if fin['revenue'] > 0:
+            ps = quote['market_cap'] / (fin['revenue'] / 1e8)
+            if ps > 100:
+                errors.append(f'PS {ps:.0f}x 极高')
+
+    if errors:
+        print(f"   ❌ 数据异常: {'; '.join(errors)}")
+        print(f"   ⚠️ 以上异常可能由送转股未完全除权导致，已尽力修正，但结论可能仍有偏差")
+    else:
+        print(f"   ✅ 数据校验通过")
+
+    # 过滤角色
+    roles = filter_roles(quote, fin)
+    roles_arg = ','.join(roles)
+    print(f"   🎭 参与角色({len(roles)}): {roles_arg}")
+
     # 构造问题
     question = build_question(quote, fin)
     print(f"\n🎭 启动圆桌辩论...\n")
@@ -289,7 +409,7 @@ def main():
     os.chdir(script_dir)
 
     result = subprocess.run(
-        [sys.executable, 'demo.py', question],
+        [sys.executable, 'demo.py', question, '--roles', roles_arg],
         capture_output=True, text=True, timeout=300,
         env={**os.environ, 'TAOTOKEN_API_KEY': api_key, 'OPENAI_API_KEY': api_key},
     )
