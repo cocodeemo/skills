@@ -18,6 +18,14 @@
   > 输入 B 站链接 → 自动下载音频 → faster-whisper ASR 转写 → AI 深度总结。
   > 内置双超时退避 + 断点续传，实时进度输出，无需人工盯进度。
 
+### AI 编排
+
+- [multi-agent-debate](multi-agent-debate/) — 多 Agent 辩论复核框架
+
+  > 5 个角色（乐观派/悲观派/技术派/业务派/质疑者）× 2-3 轮互相引用反驳 → 裁判结构化裁决。
+  > 支持股票圆桌模式：自动抓实时行情+财报→注入辩论→输出 WorkBuddy 同款 HTML 报告。
+  > CLI 一行命令：`python3 stock_debate.py 688270`
+
 ## 使用方法
 
 每个 skill 包含：
