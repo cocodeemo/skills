@@ -6,27 +6,6 @@
 
 ---
 
-## 🎭 Demo · 示例
-
-### 股票圆桌辩论 — 六框架实时分析
-
-让 6 大投资流派同时分析一支股票，输出 WorkBuddy 同款 HTML 报告。
-
-> Six investment schools debate the same stock in real time, with live market data + financials. HTML report with score comparison table and color-coded progress bars.
-
-| Demo | 股票 | 看点 · Highlight |
-|------|------|-----------------|
-| [中际旭创 (300308)](stock-roundtable/demos/中际旭创_圆桌辩论报告.html) | AI 光模块龙头 | 6 框架分裂：费雪 82 分力挺 vs 格雷厄姆 0 分淘汰。同一个事实，不同哲学完全不同结论 |
-| | AI optical module leader | Fisher 82 vs Graham 0 — same facts, six different conclusions |
-| [九丰能源 (605090)](stock-roundtable/demos/九丰能源_圆桌辩论报告.html) | LNG 能源贸易商 | 6 框架一致看空，均分仅 39 分。当所有人说不时的威力 |
-| | LNG energy trader | All 6 schools agree: don't buy (avg 39/100). The power of consensus |
-
-> 💡 **如何查看**：下载 HTML 文件后在浏览器中打开。GitHub 不渲染自定义 HTML。
->
-> 💡 **How to view**: Download the HTML file and open it in your browser. GitHub does not render custom HTML.
-
----
-
 ## 📂 目录 · Contents
 
 ### 🔧 运维诊断 · DevOps Diagnostics
@@ -53,6 +32,19 @@
   > 输出 WorkBuddy 同款 HTML 报告，含六框架评分对比表 + 彩色进度条。
   >
   > *6 investment schools debate a stock with live market data. Auto-fetches real-time quotes, financials, dividend adjustments. Outputs magazine-grade HTML report.*
+
+  #### 🎭 Demo
+
+  | Demo | 股票 | 看点 · Highlight |
+  |------|------|-----------------|
+  | [中际旭创 (300308)](stock-roundtable/demos/中际旭创_圆桌辩论报告.html) | AI 光模块龙头 | 6 框架分裂：费雪 82 分力挺 vs 格雷厄姆 0 分淘汰。同一个事实，不同哲学完全不同结论 |
+  | | AI optical module leader | Fisher 82 vs Graham 0 — same facts, six different conclusions |
+  | [九丰能源 (605090)](stock-roundtable/demos/九丰能源_圆桌辩论报告.html) | LNG 能源贸易商 | 6 框架一致看空，均分仅 39 分。当所有人说不时的威力 |
+  | | LNG energy trader | All 6 schools agree: don't buy (avg 39/100). The power of consensus |
+
+  > 💡 下载 HTML 文件后在浏览器中打开（GitHub 不渲染自定义 HTML）
+  >
+  > 💡 *Download the HTML file and open it in your browser. GitHub does not render custom HTML.*
 
 ---
 
