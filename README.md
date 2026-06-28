@@ -18,12 +18,13 @@
   > 输入 B 站链接 → 自动下载音频 → faster-whisper ASR 转写 → AI 深度总结。
   > 内置双超时退避 + 断点续传，实时进度输出，无需人工盯进度。
 
-### AI 编排
+### 股票分析
 
-- [multi-agent-debate](multi-agent-debate/) — 多 Agent 辩论复核框架
+- [stock-roundtable](stock-roundtable/) — 股票圆桌辩论
 
-  > 5 个角色（乐观派/悲观派/技术派/业务派/质疑者）× 2-3 轮互相引用反驳 → 裁判结构化裁决。
-  > 支持股票圆桌模式：自动抓实时行情+财报→注入辩论→输出 WorkBuddy 同款 HTML 报告。
+  > 6 大投资流派（格雷厄姆/巴菲特/费雪/笨韭/莫大/龟龟）同时分析一支股票。
+  > 自动抓实时行情+AKShare财报+送转股除权调整+52周前复权K线校验。
+  > 输出 WorkBuddy 同款 HTML 报告，含六框架评分对比表+彩色进度条。
   > CLI 一行命令：`python3 stock_debate.py 688270`
 
 ## 使用方法

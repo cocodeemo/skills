@@ -1,6 +1,6 @@
 ---
-name: multi-agent-debate
-description: "多 Agent 辩论复核框架——通用辩论 + 6 大投资流派股票分析。多个 AI Agent 以不同角色结构化辩论、互相引用反驳，输出 WorkBuddy 同款 HTML 报告。支持自动行情注入、送转股除权调整、角色智能过滤。"
+name: stock-roundtable
+description: "股票圆桌辩论——6 大投资流派（格雷厄姆/巴菲特/费雪/笨韭/莫大/龟龟）同时分析一支股票，自动抓行情+财报+除权调整，输出 WorkBuddy 同款 HTML 报告。来源：cocodeemo/stock-analysis-skills。"
 version: 1.6.0
 author: Agent + 大哥
 license: MIT
