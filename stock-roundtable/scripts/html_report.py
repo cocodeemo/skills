@@ -139,20 +139,6 @@ nav {
   color: var(--text-secondary); padding: 2px 0; font-size: 0.85rem;
 }
 
-/* Skipped roles notice */
-.cc-skipped {
-  margin-bottom: 24px; padding: 14px 18px;
-  background: #FFFBEB; border: 1px solid #FDE68A;
-  border-radius: 10px; font-size: 0.85rem;
-}
-.cc-skipped-label {
-  color: var(--accent); font-weight: 700; font-size: 0.82rem;
-  letter-spacing: 0.04em; margin-bottom: 4px;
-}
-.cc-skipped-item {
-  color: var(--text-secondary); padding: 1px 0; font-size: 0.82rem;
-}
-
 .cc-vote {
   display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
   padding-top: 20px; border-top: 1px dashed var(--border);
@@ -734,18 +720,6 @@ def _build_validation_html(errors: list, warnings: list) -> str:
   {items}
 </div>"""
 
-def _build_skipped_html(skipped: list) -> str:
-    """渲染跳过的角色提示"""
-    if not skipped:
-        return ""
-    items = ""
-    for s in skipped:
-        items += f'<div class="cc-skipped-item">⊖ {s}</div>'
-    return f"""<div class="cc-skipped">
-  <div class="cc-skipped-label">⏭️ 自动跳过的角色</div>
-  {items}
-</div>"""
-
 def _render_snapshot(snapshot: dict) -> str:
     """渲染数据快照网格"""
     if not snapshot:
@@ -790,7 +764,6 @@ def render_html(result: DebateResult, stock_data: dict = None) -> str:
     short_q = _shorten_question(display_title)
     validation_errors = stock_data.get("validation_errors", [])
     validation_warnings = stock_data.get("validation_warnings", [])
-    skipped_roles = stock_data.get("skipped_roles", [])
 
     # 快照
     snapshot_html = _render_snapshot(stock_data.get("snapshot", {}))
@@ -907,7 +880,6 @@ def render_html(result: DebateResult, stock_data: dict = None) -> str:
       {snapshot_html}
 
       {_build_validation_html(validation_errors, validation_warnings)}
-      {_build_skipped_html(skipped_roles)}
 
       <div class="cc-headline-label">圆桌综合视角</div>
       <div class="cc-headline">{recommendation}</div>

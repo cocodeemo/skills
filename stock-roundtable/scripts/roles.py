@@ -215,7 +215,7 @@ Step3仓位弹性：市场高位降弹性，市场低位加弹性。不预测顶
 STOCK_INVESTMENT_ROLES = ["graham", "buffett", "fisher", "benjiu", "luohuitou", "shiji"]
 
 
-def select_roles(question: str, max_roles: int = 6) -> list[str]:
+def select_roles(question: str, max_roles: int = 5) -> list[str]:
     q = question.lower()
     if any(kw in q for kw in ["持有","买入","卖出","加仓","减仓","持仓","估值","pe","pb","eps","roe","毛利率","净利率","营收","市值","是否值得","股票","股价","st","*st","科创板","创业板","军工","半导体","锂矿","矿","盐湖"]):
         return STOCK_INVESTMENT_ROLES[:max_roles]

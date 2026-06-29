@@ -167,6 +167,7 @@ def fetch_eastmoney_quote(code: str) -> dict:
         secid = f"0.{code}"
 
     url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f57,f58,f43,f46,f44,f45,f47,f48,f50,f51,f52,f116,f117,f162,f167,f168,f169,f170,f171"
+    import json, urllib.request
     try:
         req = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0', 'Referer': 'https://quote.eastmoney.com/'
@@ -228,13 +229,10 @@ def cross_validate(quote: dict, fin: dict, em: dict) -> tuple:
 
 # ── 1.6 获取产业链格局（v4-pro 生成行业背景）──
 
-def fetch_industry_context(quote: dict, fin: dict, api_key: str, base_url: str = "") -> str:
+def fetch_industry_context(quote: dict, fin: dict, api_key: str) -> str:
     """用 v4-pro 生成该股票的产业链位置、供需格局、竞争态势、近期催化"""
     name = quote.get('name', '')
     code = quote.get('code', '')
-
-    # 使用传入的 base_url，fallback 到 taotoken
-    api_url = base_url if base_url else "https://taotoken.net/api/v1/chat/completions"
 
     fin_text = ""
     if fin and fin.get('revenue'):
@@ -266,7 +264,7 @@ def fetch_industry_context(quote: dict, fin: dict, api_key: str, base_url: str =
             "max_tokens": 500,
         }
         req = urllib.request.Request(
-            api_url,
+            "https://taotoken.net/api/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
@@ -496,13 +494,20 @@ def build_snapshot(quote: dict, fin: dict = None) -> dict:
 
 # ── 5. 角色过滤 ──
 
-def filter_roles(quote: dict, fin: dict = None) -> tuple:
-    """根据股票特征过滤不合适的投资流派，返回 (roles, skipped)"""
+def filter_roles(quote: dict, fin: dict = None) -> list[str]:
+    """根据股票特征过滤不合适的投资流派"""
     from roles import STOCK_INVESTMENT_ROLES
     roles = list(STOCK_INVESTMENT_ROLES)
     skipped = []
 
     pe = quote.get('pe_ttm', 0)
+    is_growth = False
+
+    if fin:
+        rev_yoy = fin.get('revenue_yoy', 0)
+        gross_margin = fin.get('gross_margin', 0)
+        if rev_yoy > 30 and gross_margin > 50:
+            is_growth = True
 
     if pe > 50 or (fin and fin.get('revenue', 0) < 50e8):
         if 'graham' in roles:
@@ -516,15 +521,14 @@ def filter_roles(quote: dict, fin: dict = None) -> tuple:
 
     if skipped:
         print(f"   🔍 自动跳过: {', '.join(skipped)}")
-    return roles, skipped
+    return roles
 
 
 # ── 6. 主流程 ──
 
 def main():
-    # 解析 --rounds / --model 参数
+    # 解析 --rounds 参数
     custom_rounds = 2
-    custom_model = ""
     args = list(sys.argv[1:])
     code = None
     i = 0
@@ -532,26 +536,19 @@ def main():
         if args[i] == '--rounds' and i + 1 < len(args):
             custom_rounds = int(args[i + 1])
             if custom_rounds < 1:
-                print(f"   ⚠️ rounds 自动调整为 1")
                 custom_rounds = 1
             elif custom_rounds > 3:
-                print(f"   ⚠️ rounds 自动调整为 3（上限）")
                 custom_rounds = 3
-            i += 2
-        elif args[i] == '--model' and i + 1 < len(args):
-            custom_model = args[i + 1]
-            print(f"   🧠 辩论模型: {custom_model}")
             i += 2
         else:
             code = args[i]
             i += 1
 
     if not code:
-        print("用法: python3 stock_debate.py <股票代码> [--rounds 3] [--model deepseek-v4-pro]")
+        print("用法: python3 stock_debate.py <股票代码> [--rounds 3]")
         print("示例: python3 stock_debate.py 688270")
         print("      python3 stock_debate.py 00700      # 港股")
         print("      python3 stock_debate.py 688270 --rounds 3")
-        print("      python3 stock_debate.py 688270 --model deepseek-v4-pro")
         sys.exit(1)
 
     # 获取 API key（用 yaml.safe_load 而非正则）
@@ -560,49 +557,39 @@ def main():
         with open(os.path.expanduser('~/.hermes/config.yaml')) as f:
             cfg = yaml.safe_load(f)
         api_key = ""
-        base_url = ""
         # 尝试多层读取
         if isinstance(cfg, dict):
-            # 1. 顶层 api_key/key/token + base_url
+            # 1. 顶层 api_key/key/token
             for key in ['api_key', 'key', 'token']:
                 if key in cfg and cfg[key]:
                     api_key = str(cfg[key])
                     break
-            if 'base_url' in cfg and cfg['base_url']:
-                base_url = str(cfg['base_url'])
             # 2. providers dict（旧格式）
-            if (not api_key or not base_url) and 'providers' in cfg:
+            if not api_key and 'providers' in cfg:
                 providers = cfg['providers']
-                prov_list = providers.values() if isinstance(providers, dict) else (providers if isinstance(providers, list) else [])
-                for p in prov_list:
-                    if isinstance(p, dict):
-                        if not api_key and p.get('api_key'):
+                if isinstance(providers, dict):
+                    for p in providers.values():
+                        if isinstance(p, dict) and p.get('api_key'):
                             api_key = str(p['api_key'])
-                        if not base_url and p.get('base_url'):
-                            base_url = str(p['base_url'])
-                        if api_key and base_url:
+                            break
+                elif isinstance(providers, list):
+                    for p in providers:
+                        if isinstance(p, dict) and p.get('api_key'):
+                            api_key = str(p['api_key'])
                             break
             # 3. custom_providers list（常见格式）
             if not api_key and 'custom_providers' in cfg:
                 cp = cfg['custom_providers']
                 if isinstance(cp, list):
                     for p in cp:
-                        if isinstance(p, dict):
-                            if not api_key and p.get('api_key'):
-                                api_key = str(p['api_key'])
-                            if not base_url and p.get('base_url'):
-                                base_url = str(p['base_url'])
-                            if api_key and base_url:
-                                break
+                        if isinstance(p, dict) and p.get('api_key'):
+                            api_key = str(p['api_key'])
+                            break
                 elif isinstance(cp, dict):
                     for p in cp.values():
-                        if isinstance(p, dict):
-                            if not api_key and p.get('api_key'):
-                                api_key = str(p['api_key'])
-                            if not base_url and p.get('base_url'):
-                                base_url = str(p['base_url'])
-                            if api_key and base_url:
-                                break
+                        if isinstance(p, dict) and p.get('api_key'):
+                            api_key = str(p['api_key'])
+                            break
             # 4. delegation.api_key
             if not api_key and 'delegation' in cfg:
                 dk = cfg['delegation'].get('api_key', '') if isinstance(cfg['delegation'], dict) else ''
@@ -673,12 +660,12 @@ def main():
         print(f"   ✅ 数据校验通过（三方一致）")
 
     # 过滤角色
-    roles, skipped_roles = filter_roles(quote, fin)
+    roles = filter_roles(quote, fin)
     roles_arg = ','.join(roles)
     print(f"   🎭 参与角色({len(roles)}): {roles_arg}")
 
     # 拉产业链格局
-    industry_context = fetch_industry_context(quote, fin, api_key, base_url)
+    industry_context = fetch_industry_context(quote, fin, api_key)
 
     # 构造问题
     question = build_question(quote, fin, company_profile, industry_context)
@@ -691,10 +678,8 @@ def main():
     # 用 background=True + wait 模式，用户可看到进度
     print("⚔️  辩论后台运行中，请等待...")
     t0 = time.time()
-    demo_args = [sys.executable, 'demo.py', question, '--roles', roles_arg, '--rounds', str(custom_rounds)]
-    if custom_model:
-        demo_args += ['--model', custom_model]
     result = subprocess.run(
+        [sys.executable, 'demo.py', question, '--roles', roles_arg, '--rounds', str(custom_rounds)],
         capture_output=True, text=True, timeout=900,
         env={**os.environ, 'TAOTOKEN_API_KEY': api_key, 'OPENAI_API_KEY': api_key},
     )
@@ -731,7 +716,6 @@ def main():
         'snapshot': snapshot,
         'validation_errors': validation_errors,
         'validation_warnings': validation_warnings,
-        'skipped_roles': skipped_roles,
     })
 
     date_tag = datetime.now().strftime('%Y%m%d')
