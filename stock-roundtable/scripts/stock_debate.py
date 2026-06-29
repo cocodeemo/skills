@@ -443,7 +443,8 @@ def main():
         'snapshot': snapshot,
     })
 
-    out_path = f'report_{name}_{code}.html'
+    date_tag = datetime.now().strftime('%Y%m%d')
+    out_path = f'report_{name}_{code}_{date_tag}.html'
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(html)
 
