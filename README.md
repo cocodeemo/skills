@@ -28,10 +28,12 @@
 
 - **[stock-roundtable](stock-roundtable/)** — 股票圆桌辩论
   > 6 大投资流派（格雷厄姆/巴菲特/费雪/笨韭/莫大/龟龟）同时分析一支股票。
-  > 自动抓实时行情 + AKShare 财报 + 送转股除权调整 + 52 周前复权 K 线校验。
-  > 输出 WorkBuddy 同款 HTML 报告，含六框架评分对比表 + 彩色进度条。
+  > 自动抓腾讯行情 + AKShare 财报 + 东财交叉验证 + 送转股除权 + 52 周前复权 K 线。
+  > 产业链格局注入（v4-pro 自动分析供给瓶颈/需求爆发）。
+  > 输出 WorkBuddy 同款 HTML 报告，含六框架评分对比表 + 彩色进度条 + 数据校验警告 + 跳过角色提示。
+  > 支持 A 股/港股、`--rounds`、`--model` 参数。
   >
-  > *6 investment schools debate a stock with live market data. Auto-fetches real-time quotes, financials, dividend adjustments. Outputs magazine-grade HTML report.*
+  > *6 investment schools debate a stock. Auto-fetches real-time quotes (Tencent+EastMoney), financials (AKShare), dividend adjustments, industry context (LLM). Magazine-grade HTML report.*
 
   #### 🎭 Demo
 

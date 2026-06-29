@@ -114,6 +114,45 @@ nav {
 .cc-headline strong { font-weight: 700; }
 .cc-headline em { font-style: normal; font-weight: 700; color: var(--red); }
 
+/* Consensus block */
+.cc-consensus {
+  margin-bottom: 28px; padding: 20px 24px;
+  background: var(--bg-warm); border-radius: 12px;
+  border-left: 4px solid var(--blue);
+}
+.cc-consensus p {
+  font-size: 1.05rem; color: var(--text-primary); line-height: 1.85; margin: 0;
+}
+.cc-consensus p strong { font-weight: 700; }
+
+/* Data validation warnings */
+.cc-validation {
+  margin-bottom: 24px; padding: 16px 20px;
+  background: #FEF2F2; border: 1px solid #FECACA;
+  border-radius: 10px; font-size: 0.9rem;
+}
+.cc-validation-label {
+  color: var(--red); font-weight: 700; font-size: 0.85rem;
+  letter-spacing: 0.05em; margin-bottom: 6px;
+}
+.cc-validation-item {
+  color: var(--text-secondary); padding: 2px 0; font-size: 0.85rem;
+}
+
+/* Skipped roles notice */
+.cc-skipped {
+  margin-bottom: 24px; padding: 14px 18px;
+  background: #FFFBEB; border: 1px solid #FDE68A;
+  border-radius: 10px; font-size: 0.85rem;
+}
+.cc-skipped-label {
+  color: var(--accent); font-weight: 700; font-size: 0.82rem;
+  letter-spacing: 0.04em; margin-bottom: 4px;
+}
+.cc-skipped-item {
+  color: var(--text-secondary); padding: 1px 0; font-size: 0.82rem;
+}
+
 .cc-vote {
   display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
   padding-top: 20px; border-top: 1px dashed var(--border);
@@ -290,6 +329,32 @@ footer p { max-width: 680px; margin: 0 auto; font-size: 0.95rem; }
   .voice-card { padding: 24px; }
   .dispute-card { padding: 20px; grid-template-columns: 1fr; gap: 8px; }
   .risk-table th, .risk-table td { padding: 14px 14px; }
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #1A1817; --bg-secondary: #242220; --bg-card: #242220;
+    --bg-elevated: #2D2A28; --bg-warm: #2D2A28; --bg-dark: #F5F2EE;
+    --text-primary: #E5E2DE; --text-secondary: #B0ABA6;
+    --text-muted: #8A8480; --text-light: #6B6560;
+    --accent: #F59E0B; --accent-light: #78350F; --accent-hover: #FBBF24;
+    --border: #3D3A36; --border-light: #33302D;
+    --red: #F87171; --green: #34D399; --blue: #60A5FA;
+  }
+  .cc-validation { background: #2D1F1F; border-color: #5C2020; }
+  .cc-consensus { background: #1F2A35; border-left-color: #60A5FA; }
+  .score-total { background: #2D2A28; }
+  .score-total-grade.top { background: #14532D; color: #86EFAC; }
+  .score-total-grade.good { background: #1E3A5F; color: #93C5FD; }
+  .score-total-grade.ok { background: #4A3500; color: #FDE68A; }
+  .score-total-grade.bad { background: #5C2020; color: #FCA5A5; }
+  .score-total-grade.skip { background: #2D2A28; color: #8A8480; }
+  .compare-verdict.buy { background: #14532D; color: #86EFAC; }
+  .compare-verdict.hold { background: #4A3500; color: #FDE68A; }
+  .compare-verdict.sell { background: #5C2020; color: #FCA5A5; }
+  .score-table { background: #2D2A28; }
+  .score-table th { background: #242220; }
 }
 """
 
@@ -532,28 +597,42 @@ def _build_comparison_table(transcript: list) -> str:
         if not name or not content:
             continue
 
-        # 按角色分组，取最后一轮
-        role_key = name.split(' ')[0] if ' ' in name else name
-        # 提取总分 /100（支持小数、文字描述等格式）
+        # 提取总分 —— 多段兜底
+        m = None
+        # 1. 标准的 "总分：XX/100" 格式
         m = re.search(r'总分[：:].*?([\d.]+)\s*/\s*100', content)
+        # 2. "XX/100" 格式（独立一行）
         if not m:
-            m = re.search(r'([\d.]+)\s*/\s*100\s*(?:分)?', content)
+            m = re.search(r'(?<!\d)([\d.]+)\s*/\s*100\s*(?:分|→)', content)
+        # 3. "总分约XX分" "总分降至XX分" "总分仅仅XX"
         if not m:
-            # "总分约XX分" "降至约XX分"
-            m = re.search(r'(?:总分|降至)[^\d]*?([\d.]+)\s*分', content)
+            m = re.search(r'(?:总分|综合|加权).*?[\s：:]*(?:约|仅|降至|不及)?\s*([\d.]+)\s*分', content)
+        # 4. "*总分*：**XX**/100" (bold Markdown)
         if not m:
-            # 表格最后一列是数字（兜底）
+            m = re.search(r'\*\*总分\*\*[：:]\s*\*?\*?([\d.]+)\*?\*?\s*/?\s*100', content)
+        # 5. 表格最后一行最后一列是数字（兜底）
+        if not m:
             for line in content.split('\n'):
-                if re.match(r'^\|.*\|\s*$', line):
+                if re.match(r'^\|.*\|\s*$', line) and not re.match(r'^\|[\s\-:]+\|', line):
                     cells = [c.strip() for c in line.split('|')[1:-1]]
                     if len(cells) >= 2:
                         try:
-                            v = float(cells[-1])
-                            if v <= 100:
+                            # 最后一行最后单元格
+                            last = cells[-1].replace('**', '').strip()
+                            v = float(last)
+                            if 0 < v <= 100:
                                 m = type('m', (), {'group': lambda self, x=0: str(v)})()
                                 break
                         except ValueError:
-                            pass
+                            # 倒数第二格（有时结论在最后一格）
+                            if len(cells) > 2:
+                                try:
+                                    v = float(cells[-2].replace('**', '').strip())
+                                    if 0 < v <= 100:
+                                        m = type('m', (), {'group': lambda self, x=0: str(v)})()
+                                        break
+                                except ValueError:
+                                    pass
 
         if m:
             score = float(m.group(1))
@@ -631,6 +710,42 @@ def _grade_label(score: float) -> str:
     return '🚫 避开'
 
 
+def _build_consensus_html(consensus: str) -> str:
+    """渲染共识结论块"""
+    if not consensus or consensus == '无明确共识':
+        return ""
+    return f"""<div class="cc-consensus">
+  <div class="cc-headline-label">圆桌共识</div>
+  <p>{consensus}</p>
+</div>"""
+
+
+def _build_validation_html(errors: list, warnings: list) -> str:
+    """渲染数据校验警告"""
+    if not errors and not warnings:
+        return ""
+    items = ""
+    for e in errors:
+        items += f'<div class="cc-validation-item">❌ {e}</div>'
+    for w in warnings:
+        items += f'<div class="cc-validation-item">⚠️ {w}</div>'
+    return f"""<div class="cc-validation">
+  <div class="cc-validation-label">🔍 数据校验警告</div>
+  {items}
+</div>"""
+
+def _build_skipped_html(skipped: list) -> str:
+    """渲染跳过的角色提示"""
+    if not skipped:
+        return ""
+    items = ""
+    for s in skipped:
+        items += f'<div class="cc-skipped-item">⊖ {s}</div>'
+    return f"""<div class="cc-skipped">
+  <div class="cc-skipped-label">⏭️ 自动跳过的角色</div>
+  {items}
+</div>"""
+
 def _render_snapshot(snapshot: dict) -> str:
     """渲染数据快照网格"""
     if not snapshot:
@@ -673,6 +788,9 @@ def render_html(result: DebateResult, stock_data: dict = None) -> str:
     title_prefix = stock_data.get("title_prefix", "")
     display_title = stock_data.get("display_title", d["question"])  # 短标题，用于 Hero/导航
     short_q = _shorten_question(display_title)
+    validation_errors = stock_data.get("validation_errors", [])
+    validation_warnings = stock_data.get("validation_warnings", [])
+    skipped_roles = stock_data.get("skipped_roles", [])
 
     # 快照
     snapshot_html = _render_snapshot(stock_data.get("snapshot", {}))
@@ -788,9 +906,13 @@ def render_html(result: DebateResult, stock_data: dict = None) -> str:
 
       {snapshot_html}
 
+      {_build_validation_html(validation_errors, validation_warnings)}
+      {_build_skipped_html(skipped_roles)}
+
       <div class="cc-headline-label">圆桌综合视角</div>
       <div class="cc-headline">{recommendation}</div>
 
+      {_build_consensus_html(consensus)}
       <div class="cc-confidence">
         <div style="display:flex;justify-content:space-between;font-size:0.85rem;color:var(--text-muted);">
           <span>综合置信度</span><span>{confidence:.0%}</span>

@@ -4,21 +4,29 @@
 
 用法:
     python3 stock_debate.py 688270
-    python3 stock_debate.py 000762  # 西藏矿业
+    python3 stock_debate.py 000762        # 西藏矿业
+    python3 stock_debate.py 00700         # 港股腾讯（自动识别）
+    python3 stock_debate.py 688270 --rounds 3
 """
 
-import sys, os, re, json, urllib.request, subprocess
+import sys, os, re, json, urllib.request, subprocess, time
 from datetime import datetime
 
 # ── 1. 获取实时行情 ──
 
 def fetch_stock_quote(code: str) -> dict:
-    """从腾讯行情 API 拉取实时数据"""
+    """从腾讯行情 API 拉取实时数据，支持 A 股和港股"""
     # 判断交易所
+    is_hk = False
     if code.startswith(('6', '9')):
         full_code = f"sh{code}"
-    else:
+    elif len(code) == 5 and code.startswith(('0', '3')):
         full_code = f"sz{code}"
+    else:
+        # 港股：需要 hk 前缀，补齐 5 位
+        is_hk = True
+        padded = code.zfill(5)
+        full_code = f"hk{padded}"
 
     url = f"https://qt.gtimg.cn/q={full_code}"
     req = urllib.request.Request(url, headers={
@@ -45,8 +53,7 @@ def fetch_stock_quote(code: str) -> dict:
         print(f"⚠️ 数据字段不足 (got {len(fields)})")
         return {}
 
-    # 腾讯行情 API 字段索引 (腾讯 qt 接口标准格式)
-    # 参考: https://cloud.tencent.com/developer/article/1200614
+    # 腾讯行情 API 字段索引
     name = fields[1]
     price = float(fields[3]) if fields[3] else 0
     prev_close = float(fields[4]) if fields[4] else 0
@@ -58,21 +65,38 @@ def fetch_stock_quote(code: str) -> dict:
     pe_ttm = float(fields[39]) if fields[39] else 0        # 动态市盈率
     market_cap = float(fields[45]) if fields[45] else 0     # 总市值(亿)
 
-    # ── 拉 前复权 K 线取真实 52 周高低（腾讯 qt 接口的 52 周值不除权）──
+    # ── 拉 前复权 K 线取真实 52 周高低 ──
     real_high_52w = 0
     real_low_52w = 0
-    try:
-        kurl = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={full_code},day,,,250,qfq"
-        with urllib.request.urlopen(urllib.request.Request(kurl, headers={
-            'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.qq.com/'
-        }), timeout=8) as resp:
-            kd = json.loads(resp.read())
-            klines = kd.get('data', {}).get(full_code, {}).get('qfqday', [])
-            if klines:
-                real_high_52w = max(float(k[3]) for k in klines[-250:])
-                real_low_52w = min(float(k[4]) for k in klines[-250:])
-    except Exception:
-        pass
+    # 两个端点轮流尝试
+    endpoints = [
+        f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={full_code},day,,,250,qfq",
+        f"https://qt.gtimg.cn/q={full_code}",  # fallback
+    ]
+    kline_ok = False
+    for kurl in endpoints:
+        if kline_ok:
+            break
+        try:
+            if 'fqkline' in kurl:
+                with urllib.request.urlopen(urllib.request.Request(kurl, headers={
+                    'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.qq.com/'
+                }), timeout=10) as resp:
+                    kd = json.loads(resp.read())
+                    klines = kd.get('data', {}).get(full_code, {}).get('qfqday', [])
+                    if klines:
+                        real_high_52w = max(float(k[3]) for k in klines[-250:])
+                        real_low_52w = min(float(k[4]) for k in klines[-250:])
+                        kline_ok = True
+        except Exception:
+            continue
+
+    # HK stocks use different field mapping
+    if is_hk:
+        # 港股 PE 在 fields[39]、市值不同（fields[44]=市值，单位可能不同）
+        market_cap = float(fields[44]) if fields[44] else 0
+        if not market_cap:
+            market_cap = float(fields[45]) if fields[45] else 0
 
     high_52w = real_high_52w if real_high_52w else float(fields[47]) if fields[47] else 0
     low_52w = real_low_52w if real_low_52w else float(fields[48]) if fields[48] else 0
@@ -95,8 +119,168 @@ def fetch_stock_quote(code: str) -> dict:
         'low_52w': low_52w,
         'market_cap': market_cap,
         'is_st': is_st,
+        'is_hk': is_hk,
         'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
     }
+
+
+# ── 1.5 获取公司主营业务（动态背景）──
+
+def fetch_company_profile(code: str) -> str:
+    """通过 AKShare 获取公司主营业务描述，失败返回空"""
+    try:
+        import akshare as ak
+        # 尝试个股信息
+        try:
+            info = ak.stock_individual_info_em(symbol=code)
+            if info is not None and not info.empty:
+                for _, row in info.iterrows():
+                    if '主营' in str(row.get('item', '')):
+                        biz = str(row.get('value', ''))
+                        if biz and len(biz) > 10:
+                            return biz[:200]
+        except Exception:
+            pass
+
+        # 备选：公司概况
+        try:
+            profile = ak.stock_profile_cninfo(symbol=code)
+            if profile is not None and not profile.empty:
+                biz = str(profile.iloc[0].get('主营业务', ''))
+                if biz and len(biz) > 10:
+                    return biz[:200]
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return ""
+
+
+# ── 1.6 EastMoney 行情（交叉验证用）──
+
+def fetch_eastmoney_quote(code: str) -> dict:
+    """从东方财富 API 获取实时行情，用于交叉验证"""
+    # 沪市 1.xxx，深市 0.xxx
+    if code.startswith(('6', '9')):
+        secid = f"1.{code}"
+    else:
+        secid = f"0.{code}"
+
+    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f57,f58,f43,f46,f44,f45,f47,f48,f50,f51,f52,f116,f117,f162,f167,f168,f169,f170,f171"
+    try:
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0', 'Referer': 'https://quote.eastmoney.com/'
+        })
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read())
+            d = data.get('data', {})
+            if not d:
+                return {}
+            return {
+                'name': d.get('f58', ''),
+                'price': d.get('f43', 0) / 100 if d.get('f43') else 0,
+                'pe_ttm': d.get('f162', 0) / 100 if d.get('f162') else 0,  # PE(TTM) ×100存储
+                'market_cap': d.get('f116', 0) / 1e8 if d.get('f116') else 0,  # 总市值(元→亿)
+            }
+    except Exception:
+        return {}
+
+
+def cross_validate(quote: dict, fin: dict, em: dict) -> tuple:
+    """三方交叉验证：腾讯行情 vs AKShare财务 vs EastMoney"""
+    errors, warnings = [], []
+    pe_tencent = quote.get('pe_ttm', 0)
+    pe_calc = quote['price'] / (fin['eps'] * 4) if fin and fin.get('eps', 0) > 0 else 0
+    pe_em = em.get('pe_ttm', 0)
+
+    # PE 三源对比
+    pe_values = [(pe_tencent, '腾讯'), (pe_em, '东方财富')]
+    if pe_calc > 0:
+        pe_values.append((pe_calc, '计算值'))
+    if len(pe_values) >= 2:
+        pe_max = max(v for v, _ in pe_values)
+        pe_min = min(v for v, _ in pe_values)
+        if pe_max > 0 and (pe_max - pe_min) / pe_min > 0.15:
+            details = ', '.join(f'{s}={v:.0f}x' for v, s in pe_values)
+            errors.append(f'PE多源偏差>15% ({details})')
+
+    # 市值对比
+    mc_tencent = quote.get('market_cap', 0)
+    mc_em = em.get('market_cap', 0)
+    if mc_tencent > 0 and mc_em > 0:
+        mc_diff = abs(mc_tencent - mc_em) / min(mc_tencent, mc_em)
+        if mc_diff > 0.10:
+            errors.append(f'市值偏差{mc_diff:.0%}（腾讯{mc_tencent:.0f}亿 vs 东财{mc_em:.0f}亿）')
+        else:
+            print(f"   ✅ 市值一致: 腾讯{mc_tencent:.0f}亿 vs 东财{mc_em:.0f}亿")
+
+    # PE 极端值 / PS 极端值
+    use_pe = pe_tencent or pe_em or pe_calc
+    if use_pe > 200:
+        warnings.append(f'PE {use_pe:.0f}x 极端高估')
+    if fin and fin.get('revenue', 0) > 0:
+        ps = (mc_tencent or mc_em) / (fin['revenue'] / 1e8)
+        if ps > 100:
+            warnings.append(f'PS {ps:.0f}x 极高')
+
+    return errors, warnings
+
+
+# ── 1.6 获取产业链格局（v4-pro 生成行业背景）──
+
+def fetch_industry_context(quote: dict, fin: dict, api_key: str, base_url: str = "") -> str:
+    """用 v4-pro 生成该股票的产业链位置、供需格局、竞争态势、近期催化"""
+    name = quote.get('name', '')
+    code = quote.get('code', '')
+
+    # 使用传入的 base_url，fallback 到 taotoken
+    api_url = base_url if base_url else "https://taotoken.net/api/v1/chat/completions"
+
+    fin_text = ""
+    if fin and fin.get('revenue'):
+        fin_text = f"""
+营收{fin['revenue']/1e8:.1f}亿(同比{fin['revenue_yoy']:+.0f}%)
+净利{fin['net_profit']/1e8:.2f}亿(同比{fin['net_profit_yoy']:+.0f}%)
+毛利率{fin['gross_margin']:.0f}% ROE{fin['roe']:.1f}%"""
+
+    prompt = f"""{name}({code})的核心竞争优势和最大风险分别是什么？重点分析：
+
+1. 核心产品中哪个存在供给瓶颈（如资源稀缺/进口依赖/产能受限）？
+2. 下游哪个需求正在爆发式增长（如AI/半导体/新能源）？
+3. 是否受益于国产替代/制裁/供应链重构？
+4. 市场可能低估了什么？
+
+回答简明扼要（200字以内），聚焦最关键的供需矛盾点，不要面面俱到。只列事实不评价估值。
+
+{fin_text}"""
+
+    import json, urllib.request
+    try:
+        payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "system", "content": "你是一个产业链研究分析师。用中文回答，简明扼要，只列事实。"},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 500,
+        }
+        req = urllib.request.Request(
+            api_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            content = data["choices"][0]["message"]["content"]
+            print(f"   ✅ 行业背景: {content[:80]}...")
+            return content
+    except Exception as e:
+        print(f"   ⚠️ 行业背景生成失败: {e}")
+        return ""
 
 
 # ── 2. 获取财务数据 ──
@@ -109,7 +293,6 @@ def fetch_financial_data(code: str) -> dict:
         if df is None or df.empty:
             return {}
 
-        # 取最近 3 期
         recent = df.tail(3)
         latest = recent.iloc[-1].to_dict()
         prev = recent.iloc[-2].to_dict() if len(recent) >= 2 else {}
@@ -135,7 +318,7 @@ def fetch_financial_data(code: str) -> dict:
                         continue
                     sg = row.get('送股比例', 0)
                     zz = row.get('转增比例', 0)
-                    sg = float(sg) if sg and sg == sg else 0  # 处理 NaN
+                    sg = float(sg) if sg and sg == sg else 0
                     zz = float(zz) if zz and zz == zz else 0
                     factor = 1 + (sg + zz) / 10
                     if factor > 1:
@@ -173,8 +356,8 @@ def fetch_financial_data(code: str) -> dict:
 
 # ── 3. 构造带实时数据的辩论问题 ──
 
-def build_question(quote: dict, fin: dict = None) -> str:
-    """把实时数据注入问题"""
+def build_question(quote: dict, fin: dict = None, company_profile: str = "", industry_context: str = "") -> str:
+    """把实时数据注入问题，包含动态公司背景和产业链格局"""
 
     st_warning = ""
     if quote.get('is_st'):
@@ -196,26 +379,55 @@ def build_question(quote: dict, fin: dict = None) -> str:
 - 经营现金流/股（除权后）：{fin['ocf_per_share']:.2f}元
 - 应收账款周转天数：{fin['receivable_days']:.0f}天"""
 
-    q = f"""{quote['name']}({quote['code']})目前是否值得持有？
+    # 动态公司背景
+    bg_section = ""
+    if company_profile:
+        bg_section = f"\n【公司主营业务】\n{company_profile}"
+    else:
+        bg_section = "\n【公司背景】\n请根据你的训练数据判断该公司的主营业务和行业属性。"
 
-【实时行情 · {quote.get('date', '')}】
+    # 产业链格局
+    industry_section = ""
+    if industry_context:
+        industry_section = f"\n【产业链格局】\n{industry_context}"
+
+    market_tag = "港股" if quote.get('is_hk') else "A股"
+
+    # 动态关注点
+    focus_points = ["估值是否合理？", "行业景气度如何？"]
+    if fin and fin.get('revenue'):
+        if fin['net_profit_yoy'] < -30:
+            focus_points.append("利润大幅下滑的原因是什么？能否逆转？")
+        if fin['debt_ratio'] > 50:
+            focus_points.append(f"资产负债率{fin['debt_ratio']:.0f}%偏高，偿债压力如何？")
+        if fin['receivable_days'] > 90:
+            focus_points.append(f"应收账款周转{fin['receivable_days']:.0f}天，回款是否存在风险？")
+    if quote.get('is_st'):
+        focus_points.append("ST状态意味着什么风险？摘帽需要什么条件？")
+    focus_str = "、".join(focus_points)
+
+    q = f"""{quote['name']}({quote['code']})当前投资价值如何评估？
+
+【实时行情 · {quote.get('date', '')} · {market_tag}】
 - 最新价：{quote['price']}元
 - 涨跌幅：{quote['change_pct']:+.2f}%
 - 今日振幅：{quote['high']}-{quote['low']}
 - PE(TTM)：{quote['pe_ttm']:.0f}倍
 - 总市值：约{quote['market_cap']:.0f}亿
-- 52周高低：{quote['high_52w']}-{quote['low_52w']}
+- 52周高低（前复权）：{quote['high_52w']}-{quote['low_52w']}
 {st_warning}{fin_section}
+{bg_section}
+{industry_section}
 
-【背景】
-它是军工电子/半导体企业，科创板上市，主营射频微波芯片和SIP模组。
-
-请各角色基于以上数据进行分析辩论，重点关注：估值是否合理？军工电子行业景气度如何？ST状态意味着什么风险？财务数据揭示了哪些问题？"""
+请各角色从自己的框架出发进行分析，同时考虑三种情境：
+- 尚未持有：现在是否值得买入？
+- 已持有：应继续持有、加仓还是减仓？
+- 无论哪种：现在的风险收益比如何？重点关注：{focus_str}。"""
 
     return q
 
 
-# ── 3. 构造 HTML 快照 ──
+# ── 4. 构造 HTML 快照 ──
 
 def build_snapshot(quote: dict, fin: dict = None) -> dict:
     def fmt(v, unit=''):
@@ -282,32 +494,21 @@ def build_snapshot(quote: dict, fin: dict = None) -> dict:
     return snap
 
 
-# ── 4. 角色过滤 ──
+# ── 5. 角色过滤 ──
 
-def filter_roles(quote: dict, fin: dict = None) -> list[str]:
-    """根据股票特征过滤不合适的投资流派"""
+def filter_roles(quote: dict, fin: dict = None) -> tuple:
+    """根据股票特征过滤不合适的投资流派，返回 (roles, skipped)"""
     from roles import STOCK_INVESTMENT_ROLES
     roles = list(STOCK_INVESTMENT_ROLES)
     skipped = []
 
     pe = quote.get('pe_ttm', 0)
-    market_cap = quote.get('market_cap', 0)
-    is_growth = False
 
-    # 成长/科技股判定
-    if fin:
-        rev_yoy = fin.get('revenue_yoy', 0)
-        gross_margin = fin.get('gross_margin', 0)
-        if rev_yoy > 30 and gross_margin > 50:
-            is_growth = True
-
-    # 格雷厄姆不适合：PE>>15 或 营收<50亿 → 7条硬标准必挂
     if pe > 50 or (fin and fin.get('revenue', 0) < 50e8):
         if 'graham' in roles:
             roles.remove('graham')
             skipped.append('📐格雷厄姆(PE/营收不达标)')
 
-    # 龟龟不适合：无分红+高PE → 穿透回报率必为0
     if pe > 100 and (not fin or fin.get('roe', 0) < 5):
         if 'shiji' in roles:
             roles.remove('shiji')
@@ -315,26 +516,107 @@ def filter_roles(quote: dict, fin: dict = None) -> list[str]:
 
     if skipped:
         print(f"   🔍 自动跳过: {', '.join(skipped)}")
-    return roles
+    return roles, skipped
 
 
-# ── 5. 主流程 ──
+# ── 6. 主流程 ──
 
 def main():
-    if len(sys.argv) < 2:
-        print("用法: python3 stock_debate.py <股票代码>")
+    # 解析 --rounds / --model 参数
+    custom_rounds = 2
+    custom_model = ""
+    args = list(sys.argv[1:])
+    code = None
+    i = 0
+    while i < len(args):
+        if args[i] == '--rounds' and i + 1 < len(args):
+            custom_rounds = int(args[i + 1])
+            if custom_rounds < 1:
+                print(f"   ⚠️ rounds 自动调整为 1")
+                custom_rounds = 1
+            elif custom_rounds > 3:
+                print(f"   ⚠️ rounds 自动调整为 3（上限）")
+                custom_rounds = 3
+            i += 2
+        elif args[i] == '--model' and i + 1 < len(args):
+            custom_model = args[i + 1]
+            print(f"   🧠 辩论模型: {custom_model}")
+            i += 2
+        else:
+            code = args[i]
+            i += 1
+
+    if not code:
+        print("用法: python3 stock_debate.py <股票代码> [--rounds 3] [--model deepseek-v4-pro]")
         print("示例: python3 stock_debate.py 688270")
+        print("      python3 stock_debate.py 00700      # 港股")
+        print("      python3 stock_debate.py 688270 --rounds 3")
+        print("      python3 stock_debate.py 688270 --model deepseek-v4-pro")
         sys.exit(1)
 
-    code = sys.argv[1]
+    # 获取 API key（用 yaml.safe_load 而非正则）
+    try:
+        import yaml
+        with open(os.path.expanduser('~/.hermes/config.yaml')) as f:
+            cfg = yaml.safe_load(f)
+        api_key = ""
+        base_url = ""
+        # 尝试多层读取
+        if isinstance(cfg, dict):
+            # 1. 顶层 api_key/key/token + base_url
+            for key in ['api_key', 'key', 'token']:
+                if key in cfg and cfg[key]:
+                    api_key = str(cfg[key])
+                    break
+            if 'base_url' in cfg and cfg['base_url']:
+                base_url = str(cfg['base_url'])
+            # 2. providers dict（旧格式）
+            if (not api_key or not base_url) and 'providers' in cfg:
+                providers = cfg['providers']
+                prov_list = providers.values() if isinstance(providers, dict) else (providers if isinstance(providers, list) else [])
+                for p in prov_list:
+                    if isinstance(p, dict):
+                        if not api_key and p.get('api_key'):
+                            api_key = str(p['api_key'])
+                        if not base_url and p.get('base_url'):
+                            base_url = str(p['base_url'])
+                        if api_key and base_url:
+                            break
+            # 3. custom_providers list（常见格式）
+            if not api_key and 'custom_providers' in cfg:
+                cp = cfg['custom_providers']
+                if isinstance(cp, list):
+                    for p in cp:
+                        if isinstance(p, dict):
+                            if not api_key and p.get('api_key'):
+                                api_key = str(p['api_key'])
+                            if not base_url and p.get('base_url'):
+                                base_url = str(p['base_url'])
+                            if api_key and base_url:
+                                break
+                elif isinstance(cp, dict):
+                    for p in cp.values():
+                        if isinstance(p, dict):
+                            if not api_key and p.get('api_key'):
+                                api_key = str(p['api_key'])
+                            if not base_url and p.get('base_url'):
+                                base_url = str(p['base_url'])
+                            if api_key and base_url:
+                                break
+            # 4. delegation.api_key
+            if not api_key and 'delegation' in cfg:
+                dk = cfg['delegation'].get('api_key', '') if isinstance(cfg['delegation'], dict) else ''
+                if dk:
+                    api_key = str(dk)
+    except Exception:
+        # fallback 到正则（兼容旧配置格式）
+        with open(os.path.expanduser('~/.hermes/config.yaml')) as f:
+            raw = f.read()
+        m = re.search(r'api_key:\s*["\']?([^"\'\n\s]+)["\']?', raw)
+        api_key = m.group(1) if m else ""
 
-    # 获取 API key
-    with open(os.path.expanduser('~/.hermes/config.yaml')) as f:
-        raw = f.read()
-    m = re.search(r'api_key:\s*["\']?([^"\'\n\s]+)["\']?', raw)
-    api_key = m.group(1) if m else ""
     if not api_key:
-        print("❌ 未找到 taotoken API key")
+        print("❌ 未找到 API key")
         sys.exit(1)
 
     # 拉行情
@@ -347,6 +629,20 @@ def main():
     print(f"   {quote['name']}: {quote['price']}元 | PE={quote['pe_ttm']:.0f}x | 市值≈{quote['market_cap']:.0f}亿")
     if quote.get('is_st'):
         print("   ⚠️ ST 风险警示股！")
+    if quote.get('is_hk'):
+        print("   🇭🇰 港股")
+
+    # 拉 EastMoney 行情（交叉验证用）
+    print(f"📡 获取 {code} EastMoney 行情(交叉验证)...")
+    em_quote = fetch_eastmoney_quote(code)
+
+    # 拉公司背景
+    print(f"📋 获取 {code} 公司信息...")
+    company_profile = fetch_company_profile(code)
+    if company_profile:
+        print(f"   ✅ 主营业务: {company_profile[:80]}...")
+    else:
+        print("   ⚠️ 未获取到公司信息，LLM 将凭训练数据自行判断")
 
     # 拉财报
     print(f"📊 获取 {code} 财务数据...")
@@ -356,67 +652,59 @@ def main():
     else:
         print("   ⚠️ 未获取到财务数据，将仅使用行情数据")
 
-    # ── 数据一致性校验 ──
-    errors = []
-    if fin and quote:
-        # 1. PE 交叉验证
-        calc_pe = quote['price'] / (fin['eps'] * 4) if fin['eps'] > 0 else 0
-        api_pe = quote['pe_ttm']
-        if calc_pe > 0 and api_pe > 0:
-            diff_pct = abs(calc_pe - api_pe) / api_pe * 100
-            if diff_pct > 15:
-                errors.append(f'PE偏差{diff_pct:.0f}%（计算{calc_pe:.0f}x vs API{api_pe:.0f}x）')
-            else:
-                print(f"   ✅ PE一致（{calc_pe:.0f}x vs {api_pe:.0f}x）")
+    # ── 三方交叉验证（腾讯 + AKShare + EastMoney）──
+    print(f"🔍 数据交叉验证...")
+    validation_errors, validation_warnings = cross_validate(quote, fin, em_quote)
 
-        # 2. 送转股提醒
-        if fin.get('split_factor', 1) > 1:
-            print(f"   ⚠️ 送转股 ×{fin['split_factor']:.1f}，每股数据已除权")
+    # 送转股提醒
+    if fin and fin.get('split_factor', 1) > 1:
+        validation_warnings.append(f"送转股 ×{fin['split_factor']:.1f}，每股数据已除权")
+        print(f"   🔄 送转股 ×{fin['split_factor']:.1f}")
 
-        # 3. 52 周高低一致性（K线算 vs API给）
-        kline_high = quote.get('high_52w', 0)
-        if kline_high > 0 and quote['price'] > kline_high * 0.95:
-            # 当前价接近或超过 52 周高（可能是 API 值没除权导致的）
-            pass  # kline data is already used, so this is handled
-        else:
-            print(f"   ✅ 52周区间: {kline_high:.0f}-{quote['low_52w']:.0f}（前复权）")
+    # 52 周 K线
+    if quote.get('high_52w', 0) > 0:
+        print(f"   ✅ 52周区间: {quote['high_52w']:.0f}-{quote['low_52w']:.0f}（前复权）")
 
-        # 4. 极端估值预警
-        if api_pe > 200:
-            errors.append(f'PE {api_pe:.0f}x 极端高估')
-        if fin['revenue'] > 0:
-            ps = quote['market_cap'] / (fin['revenue'] / 1e8)
-            if ps > 100:
-                errors.append(f'PS {ps:.0f}x 极高')
-
-    if errors:
-        print(f"   ❌ 数据异常: {'; '.join(errors)}")
-        print(f"   ⚠️ 以上异常可能由送转股未完全除权导致，已尽力修正，但结论可能仍有偏差")
+    if validation_errors:
+        print(f"   ❌ 数据异常: {'; '.join(validation_errors)}")
+    elif validation_warnings:
+        print(f"   ⚠️ 注意事项: {'; '.join(validation_warnings)}")
     else:
-        print(f"   ✅ 数据校验通过")
+        print(f"   ✅ 数据校验通过（三方一致）")
 
     # 过滤角色
-    roles = filter_roles(quote, fin)
+    roles, skipped_roles = filter_roles(quote, fin)
     roles_arg = ','.join(roles)
     print(f"   🎭 参与角色({len(roles)}): {roles_arg}")
 
+    # 拉产业链格局
+    industry_context = fetch_industry_context(quote, fin, api_key, base_url)
+
     # 构造问题
-    question = build_question(quote, fin)
-    print(f"\n🎭 启动圆桌辩论...\n")
+    question = build_question(quote, fin, company_profile, industry_context)
+    print(f"\n🎭 启动圆桌辩论（{custom_rounds} 轮）...\n")
 
     # 跑辩论
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
 
+    # 用 background=True + wait 模式，用户可看到进度
+    print("⚔️  辩论后台运行中，请等待...")
+    t0 = time.time()
+    demo_args = [sys.executable, 'demo.py', question, '--roles', roles_arg, '--rounds', str(custom_rounds)]
+    if custom_model:
+        demo_args += ['--model', custom_model]
     result = subprocess.run(
-        [sys.executable, 'demo.py', question, '--roles', roles_arg],
-        capture_output=True, text=True, timeout=300,
+        capture_output=True, text=True, timeout=900,
         env={**os.environ, 'TAOTOKEN_API_KEY': api_key, 'OPENAI_API_KEY': api_key},
     )
 
+    elapsed = time.time() - t0
+    print(f"⏱️  辩论耗时 {elapsed/60:.1f} 分钟")
+
     print(result.stdout)
     if result.stderr:
-        print("⚠️ STDERR:", result.stderr[:1000])
+        print("⚠️ STDERR:", result.stderr[:2000])
 
     if result.returncode != 0:
         print(f"❌ 辩论引擎退出码: {result.returncode}")
@@ -434,13 +722,16 @@ def main():
     name = quote['name'].replace('*', '').replace('ST', '').strip()
     snapshot = build_snapshot(quote, fin)
     date_str = quote.get('date', datetime.now().strftime('%Y-%m-%d'))
-    display_title = f"{quote['name']}({code})是否值得持有？"
+    display_title = f"{quote['name']}({code})投资价值评估"
 
     html = render_html(debate_result, stock_data={
         'date': date_str,
         'title_prefix': f'{name} · ',
         'display_title': display_title,
         'snapshot': snapshot,
+        'validation_errors': validation_errors,
+        'validation_warnings': validation_warnings,
+        'skipped_roles': skipped_roles,
     })
 
     date_tag = datetime.now().strftime('%Y%m%d')
