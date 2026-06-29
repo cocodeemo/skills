@@ -443,7 +443,7 @@ def main():
         'snapshot': snapshot,
     })
 
-    out_path = f'report_{code}.html'
+    out_path = f'report_{name}_{code}.html'
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(html)
 
